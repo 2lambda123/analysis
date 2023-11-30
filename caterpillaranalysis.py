@@ -7,6 +7,8 @@ import haloutils
 import scipy.optimize as optimize
 from scipy import interpolate
 import profilefit
+import pandas as pd
+import cPickle as pickle
 
 class PluginBase(object):
     """
@@ -1105,3 +1107,77 @@ class SubPhaseContourPlugin(PluginBase):
             cs = ax.contour(X,Y,Z,levels = levels,colors=self.colordict[lx],**kwargs)
         else:
             cs = ax.contour(X,Y,Z,levels = levels,**kwargs)
+
+
+class MaxMassPlugin(PluginBase):
+    ## Important note: the results of this are used in load_zoomid for snaps < 255
+    def __init__(self):
+        super(MaxMassPlugin,self).__init__()
+        self.filename='rsid2maxmassz0.npy'
+        self.autofigname = 'NAN'
+    def _analyze(self,hpath):
+        if not haloutils.check_mergertree_exists(hpath,autoconvert=True):
+            raise IOError("No Merger Tree")
+        zoomid = haloutils.load_zoomid(hpath)
+        rscat = haloutils.load_rscat(hpath,haloutils.get_numsnaps(hpath)-1)
+        mtc = haloutils.load_zoom_mtc(hpath, indexbyrsid=True)
+        output = np.zeros((len(mtc.Trees),2))
+        for i,(mtkey, mt) in enumerate(mtc.Trees.iteritems()):
+            output[i,0] = mtkey
+            output[i,1] = np.max(mt['mvir']/rscat.h0)
+        np.save(self.get_outfname(hpath), output)
+    def _read(self,hpath):
+        thisfilename = self.get_filename(hpath)
+        output = np.load(thisfilename)
+        return pd.Series(output[:,1], index=output[:,0])
+
+class ZoomMainBranchPlugin(PluginBase):
+    """
+    Searches the zoom MTC and pulls out the main branch of every z=0 halo
+    into an rsid-indexed dictionary.
+    """
+    def __init__(self):
+        super(ZoomMainBranchPlugin, self).__init__()
+        self.filename='zoom_main_branches.npy'
+        self.autofigname = 'NAN'
+    def _analyze(self, hpath):
+        if not haloutils.check_mergertree_exists(hpath,autoconvert=True):
+            raise IOError("No Merger Tree")
+        mtc = haloutils.load_zoom_mtc(hpath, indexbyrsid=True)
+        Nhalos = len(mtc.Trees)
+        Nsnaps = haloutils.get_numsnaps(hpath)
+        zoomid = haloutils.load_zoomid(hpath)
+        Ncolumns = len(mtc[zoomid].data.dtype)+1
+        output = np.zeros((Nhalos,Nsnaps,Ncolumns)) + np.nan
+        
+        print "{} Merger trees".format(Nhalos)
+        sys.stdout.flush()
+        start = time.time()
+        for i,(mtkey, mt) in enumerate(mtc.Trees.iteritems()):
+            if len(mt.data) < 1e5:
+                mb = mt.getMainBranch()
+            else:
+                mmp_map = mt.get_mmp_map()
+                mb = mt.getMainBranch(mmp_map=mmp_map)
+            min_snap = np.min(mb['snap'])
+            max_snap = np.max(mb['snap'])
+            ## TODO this is super broken
+            #mb = mb.view(np.float).reshape(-1,len(mb.dtype))
+            output[i,min_snap:(max_snap+1),1:] = mb
+            output[i,min_snap:(max_snap+1),0] = mtkey
+            if i % 1000 == 0:
+                print "  {:5} {:.1f}".format(i,time.time()-start)
+                sys.stdout.flush()
+                start = time.time()
+        #with open(self.get_outfname(hpath), "w") as fp:
+        #    pickle.dump(output,fp)
+        np.save(self.get_outfname(hpath), output)
+    def _read(self, hpath):
+        thisfilename = self.get_filename(hpath)
+        output = np.load(thisfilename)
+        return output
+        #return pd.Series(output[:,1], index=output[:,0])
+
+        #with open(thisfilename,"r") as fp:
+        #    mbdict = pickle.load(fp)
+        #return mbdict
